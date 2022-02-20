@@ -1,30 +1,223 @@
 ---
-title: "EDS 241 Assignment 3"
+title: "EDS241: Assignment 3"
 author: "Desik Somasundaram"
-date: "2/14/2022"
-output: html_document
----
+date: '`r format(Sys.time(), "%m/%d/%Y")`'
+output: 
+  pdf_document:
+    toc: false
+    number_sections: yes
+header-includes:
+  - \setlength{\parindent}{1em}
+  - \usepackage{float}
+--- 
+  
+``` {r setup, echo = FALSE, message = FALSE, warning = FALSE}
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+# set default chunk options
+knitr::opts_chunk$set(fig.width = 4, fig.height = 3, 
+                      echo = TRUE, message = FALSE, warning = FALSE)
+
+
+# load packages
+packages=c("stargazer", "here", "tidyverse","stringr", "janitor", 
+           "cowplot", "ggplot2", "tinytex", "datasets", "tibble", "readxl","estimatr", "car", "huxtable")
+
+for (i in packages) {
+  if (require(i,character.only=TRUE)==FALSE) {
+    install.packages(i,repos='http://cran.us.r-project.org')
+  }
+  else {
+    require(i,character.only=TRUE)
+  }
+}
+
+#devtools::install_github('rstudio/rmarkdown')
+options(scipen=10) # not scientific notation
+
+
 ```
 
-## R Markdown
+\noindent This exercise asks you to implement some of the techniques presented in Lectures 6-7. The
+goal is to estimate the causal effect of maternal smoking during pregnancy on infant birth weight
+using the treatment ignorability assumptions. The data are taken from the National Natality
+Detail Files, and the extract “SMOKING_EDS241.csv”' is a random sample of all births in
+Pennsylvania during 1989-1991. Each observation is a mother-infant pair. 
+The key variables are:
+The outcome and treatment variables are:
+birthwgt=birth weight of infant in grams
+tobacco=indicator for maternal smoking
+The control variables are:
+mage (mother's age), meduc (mother's education), mblack (=1 if mother black), alcohol (=1 if
+consumed alcohol during pregnancy), first (=1 if first child), diabete (=1 if mother diabetic),
+anemia (=1 if mother anemic)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+# Clean data
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+\noindent The following code loads and cleans the data.
 
-```{r cars}
-summary(cars)
+```{r , include=TRUE}
+
+# Load data
+smokingdata <- read_csv("SMOKING_EDS241.csv")
+# Clean data
+smokingdata <-janitor::clean_names(smokingdata)
+```
+# Unadjusted mean difference
+\noindent (a) What is the unadjusted mean difference in birth weight of infants with smoking and nonsmoking mothers? Under what assumption does this correspond to the average treatment effect
+of maternal smoking during pregnancy on infant birth weight? Provide some simple empirical
+evidence for or against this assumption. 
+
+```{r , include=TRUE}
+# smoking mothers mean
+mu_nonsmoker = smokingdata %>% 
+  filter(tobacco == 0) %>% 
+  summarize(mean(birthwgt))
+
+# non-smoking mothers mean
+mu_smoker = smokingdata %>% 
+  filter(tobacco == 1) %>% 
+  summarize(mean(birthwgt))
+
+# calculate mean  diff
+mean_diff = as.numeric(mu_nonsmoker - mu_smoker)
+
+# linear regression of choice covariate to show omitted variable bias
+model_1 <- lm_robust(meduc ~ tobacco, data = smokingdata)
+huxreg(model_1)
 ```
 
-## Including Plots
+**The unadjusted mean difference in birth weight of infants `r round(mean_diff, 3)` grams.**
+Under the "treatment ignorability assumption", this corresponds with the average treatment effect(ATE) of maternal smoking during pregnancy on infant birth weight. Assumption of “treatment ignorability” conditional on pre-treatment characteristics that allow us to assume that smoking mothers and nonsmoking mothers are good counterfactuals. The assumption of common support ensures that there is sufficient overlap in the characteristics of smoking mothers and nonsmoking mothers to find adequate matches so this aspect would need further analysis of the data. It's important to note that the treatment of smoking is not randomly assigned either. The treatment ignorability assumption says that conditional on observable covariates, the assignment to the treatment is independent of the outcome of infant birth weight. Observational regression bias can arise if the smoking mother and nonsmoking mothers are inherently different in a way which would affect their infant birth weight. For example, smoking mothers could be less health conscious which has a negative impact on their infant birth weights aside from the effect of smoking itself. The regression of tobacco one mother's education yields a statistically significant relationship which questions the validity of the assumption. There is omitted variable bias as shown by the model_1 regression which prevents us from being able to interpret the unadjusted mean difference as a causal effect.
 
-You can also embed plots, for example:
+\newpage
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+# Introducing covariates
+\noindent Assume that maternal smoking is randomly assigned conditional on the observable
+covariates listed above. Estimate the effect of maternal smoking on birth weight using a linear
+regression. Report the estimated coefficient on tobacco and its standard error.
+
+
+```{r , include=TRUE}
+model_2 <- lm_robust(formula =  birthwgt ~ tobacco + mage + meduc + as.factor(anemia) 
+                     + as.factor(diabete) + as.factor(alcohol) + 
+                       as.factor(mblack) + as.factor(first), data=smokingdata)
+
+huxreg(model_2)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+\noindent Table 1 shows the **estimated coefficients from the linear regression of effect of maternal smoking on birth weight. `r round(model_2$coefficients[2],3)` is the estimated coefficient on tobacco with `r round(model_2$std.error[2],3)` being the standard error**.
+
+
+# Exact matching
+\noindent Use the exact matching estimator to estimate the effect of maternal smoking on birth weight.
+For simplicity, consider the following covariates in your matching estimator: create a 0-1
+indicator for mother's age (=1 if mage>=34), and a 0-1 indicator for mother's education (1 if
+meduc>=16), mother's race (mblack), and alcohol consumption indicator (alcohol). These 4
+covariates will create 2*2*2*2 = 16 cells. Report the estimated average treatment effect of
+smoking on birthweight using the exact matching estimator and its linear regression analogue. 
+
+```{r , include=TRUE}
+# create indicator based on mother's age (=1 if mage>=34)
+smokingdata<- smokingdata %>% 
+              mutate(age_indicator = case_when(
+                      mage < 34 ~ 0,
+                      mage >= 34 ~ 1))
+
+# create indicator based on mother's education (1 if meduc>=16)
+smokingdata<- smokingdata %>% 
+              mutate(educ_indicator = case_when(
+                      meduc < 16 ~ 0,
+                      meduc >= 16 ~ 1))
+
+# create group variable to capture all interactions
+smokingdata<- smokingdata %>% 
+              mutate(g = paste0(age_indicator,educ_indicator,mblack,alcohol))
+
+# regression on including tobacco and the 4 grouped indicators (mother age, mother education, mother race and alcohol)
+model_3 <- lm_robust(birthwgt ~ tobacco +  as.factor(g), data= smokingdata)
+```
+
+
+
+```{r , include=TRUE}
+# exact matching table
+TIA_table <- smokingdata %>%
+  group_by(g,tobacco)%>%
+  summarise(n_obs = n(),
+            birthwgt_mean= mean(birthwgt, na.rm = T))%>% #Calculate number of observations and Y mean by X by treatment cells
+  gather(variables, values, n_obs:birthwgt_mean)%>% #Reshape data
+  mutate(variables = paste0(variables,"_",tobacco, sep=""))%>% #Combine the treatment and variables for reshaping
+  pivot_wider(id_cols = g, names_from = variables,values_from = values)%>% #Reshape data by treatment and X cell
+  ungroup()%>%  #Ungroup from X values
+  mutate(birthwgt_mean_diff = birthwgt_mean_1 - birthwgt_mean_0, #calculate Y_diff
+         w_ATE = (n_obs_0+n_obs_1)/(sum(n_obs_0)+sum(n_obs_1)),
+         w_ATT = n_obs_1/sum(n_obs_1))%>% #calculate weights
+  mutate_if(is.numeric, round, 3) #Round data
+
+
+stargazer(TIA_table, type= "text", summary = FALSE, digits = 2)
+
+# Multivariate matching estimates of ATE
+ATE=sum((TIA_table$w_ATE)*(TIA_table$birthwgt_mean_diff))
+ATE
+ATT=sum((TIA_table$w_ATT)*(TIA_table$birthwgt_mean_diff))
+ATT
+
+```
+\noindent  Table 2 shows the exact matching table used to estimate ATE.
+
+**The exact matching estimator estimates the average treatment effect(ATE) of smoking on birthweight as `r round(ATE, 3)`. The linear analogue estimates the average treatment effect(ATE) of smoking on birthweight as `r round(model_3$coefficients[2],3)`.**
+
+# Propensity Score
+\noindent Estimate the propensity score for maternal smoking using a logit estimator and based on the
+following specification: mother’s age, mother’s age squared, mother’s education, and indicators
+for mother’s race, and alcohol consumption. 
+
+
+
+```{r , include=TRUE}
+# add mother's age variable squared
+smokingdata <- smokingdata %>% 
+                mutate(mage_squared = mage * mage)
+
+model_4 <- glm(tobacco ~ mage + mage_squared + meduc + as.factor(mblack) + as.factor(alcohol), family = binomial(), data = smokingdata)
+EPS <- predict(model_4, type = "response") # estimated propensity score (EPS)
+PS_weighted <- (smokingdata$tobacco / EPS) + ((1 - smokingdata$tobacco)/(1 - EPS)) # weight EPS
+
+
+```
+
+\newpage
+\noindent Use the propensity score weighted regression (WLS) to estimate the effect of maternal
+smoking on birth weight (Lecture 7, slide 12).
+
+
+```{r , include=TRUE}
+# add propensity scores and weighted propensity scores to data as columns
+smokingdata <- smokingdata %>% 
+  mutate("EPS" = EPS, "PS_weighted" = PS_weighted)
+
+
+model_5 <- lm_robust(birthwgt ~ tobacco + mage + mage_squared + meduc + 
+                     as.factor(mblack) + as.factor(alcohol), data=smokingdata, weights=PS_weighted)
+
+wls_ATE <- model_5$coefficients[2]
+
+```
+**The weighted OLS regression estimates the average treatment effect(ATE) of smoking on birthweight as `r round(wls_ATE, 3)`**
+
+\newpage
+## Appendix
+
+```{r}
+huxreg(model_3)
+```
+
+\noindent Table A1 shows the estimated coefficients from the linear regression of effect of maternal smoking on birth weight with the inclusion of the following covariates: mother age, mother education, mother race and alcohol.
+
+
+```{r}
+huxreg(model_5)
+```
+\noindent Table A2 shows the estimated coefficients from weighted OLS estimating the effect of maternal smoking on birth weight with the inclusion of the following covariates: mother age, mother age squared, mother education, mother race and alcohol.
+
